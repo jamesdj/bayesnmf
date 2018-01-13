@@ -28,7 +28,7 @@ LOG_ZERO = math.log(MACHINE_PREC)
 class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
     """Bayesian Non-negative Matrix Factorization
 
-    Assumes Gaussian error and exponentially distribution of W and H.
+    Assumes Gaussian error and exponential distribution of W and H.
 
     Parameters
     ----------
@@ -335,8 +335,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         return np.log(n_samples) * self.n_free_params_ - 2 * log_likelihood
 
     def check_input_shape(self, X):
-        # Check that the input is of the same shape as the one passed
-        # during fit.
+        # Check that the input is of the same shape as the one passed during fit.
         if X.shape != self.input_shape_:
             raise ValueError('Shape of input is different from what was seen'
                              'in `fit`')
@@ -390,9 +389,9 @@ def gibbs_sample_param_block(inputs):
     # In Python3.x multiprocessing can pickle instance methods,
     # so I could include this in the NMF object
     # so I don't have to pass around so many parameters
-    # but for Python2 compatibility, it can't be an instance method
+    # but for Python2 compatibility, it can't be an instance method.
     # I could pass the NMF object, however.
-    # However, this may prevent joblib from memmapping the arrays (if bound to NMF object)
+    # However, this may prevent joblib from mem-mapping the arrays (if bound to NMF object)
     pbidx, X, A, B, alpha, beta, mu2, chi, k, theta, M, burnin_fraction, rs = inputs
     burnin_index = int(M * burnin_fraction)
     n_after_burnin = M - burnin_index
