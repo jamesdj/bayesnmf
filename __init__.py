@@ -1,3 +1,3 @@
-from bayesnmf import BayesianNMF
+from .bayesnmf import BayesianNMF
 
 __all__ = [BayesianNMF]

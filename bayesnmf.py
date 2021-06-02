@@ -102,7 +102,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
 
     def __init__(self, n_components=None,
                  mode='icm',
-                 tol=1E-6,
+                 tol=1E-4,
                  max_iter=10000,
                  burnin_fraction=0.5,
                  mean_only=True,
@@ -143,7 +143,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         self.n_free_params_ = None
         self.input_shape_ = None
 
-    def fit(self, X, y=None,
+    def fit(self, X_orig, y=None,
             bases_cols_to_sample=None,
             components_rows_to_sample=None,
             sample_sigma=True,
@@ -166,7 +166,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         -------
         self : object
         """
-        X = check_array(X)
+        X = check_array(X_orig.copy())
         self.input_shape_ = X.shape
         N = self.n_components
         M = self.max_iter
@@ -264,7 +264,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
                     mu2s.append(mu2)
             else:
                 new_obj = mean_squared_error(X, np.dot(A, B))
-                diff = obj - new_obj
+                diff = (obj - new_obj) / obj
                 obj = new_obj
                 if self.verbose:
                     print("MSE: ", obj)
@@ -340,7 +340,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
             raise ValueError('Shape of input is different from what was seen'
                              'in `fit`')
 
-    def marginal_likelihood(self, X, max_iter=1000, burnin_fraction=0.5, random_state=None, n_jobs=1):
+    def marginal_log_likelihood(self, X, max_iter=1000, burnin_fraction=0.5, random_state=None, n_jobs=1):
         X = check_array(X)
         check_is_fitted(self, ['input_shape_'])
         self.check_input_shape(X)
@@ -511,7 +511,8 @@ def truncated_normal_pdf(x, m, s, l, log=False):
     """
     pdf = np.array(x)
     pdf[x < 0] = 0
-    nn = [x >= 0]
+    #nn = [x >= 0]
+    nn = x >= 0
     newm = m - s * l
     std = np.sqrt(s)
     stdn = scipy.stats.norm()
