@@ -8,7 +8,6 @@ The author also shared code for Chib's method and ICM algorithm via email
 The author indicated that what they refer to as a "rectified" gaussian is actually a truncated gaussian.
 """
 import os
-import time
 import math
 
 import numpy as np
@@ -16,6 +15,7 @@ import scipy.stats
 from scipy.special import erfc, erfcinv
 #from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import NMF
+from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 from sklearn.metrics import mean_squared_error
 from joblib import Parallel, delayed
@@ -67,8 +67,6 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         If None, the random number generator is the RandomState instance used
         by `np.random`.
 
-    verbose : bool, default: False
-        Whether to print output
 
     Attributes
     ----------
@@ -108,9 +106,9 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
                  mean_only=True,
                  random_state=None,
                  verbose=False):
-
-        if mode not in ['icm', 'gibbs']:
-            raise ValueError("{} is not a supported mode. Try 'icm' or 'gibbs'".format(mode))
+        modes = ['icm', 'gibbs']
+        if mode not in modes:
+            raise ValueError(f'"{mode}" is not a supported mode. Try one of {modes}')
 
         self.n_components = n_components
         self.mode = mode
@@ -144,10 +142,10 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         self.input_shape_ = None
 
     def fit(self, X_orig, y=None,
+            lmda=0,
             bases_cols_to_sample=None,
             components_rows_to_sample=None,
             sample_sigma=True,
-            print_every=None,
             bases_init=None,
             components_init=None,
             variance_init=None,
@@ -167,6 +165,7 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         self : object
         """
         X = check_array(X_orig.copy())
+        np.fill_diagonal(X, X.diagonal() + lmda)
         self.input_shape_ = X.shape
         N = self.n_components
         M = self.max_iter
@@ -177,16 +176,18 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
             bases_cols_to_sample = [True] * N
         if components_rows_to_sample is None:
             components_rows_to_sample = [True] * N
-        alpha_prior_scalar = 1 if alpha_prior_scalar is None else alpha_prior_scalar
+        n_sqrt = np.sqrt(X_orig.mean() / N)
+        alpha_prior_scalar = 1 / n_sqrt if alpha_prior_scalar is None else alpha_prior_scalar
         # in Schmidt et al. they have all alpha_i,n = 1
         # and choose the beta prior to match the amplitude of the data
-        beta_prior_scalar = N / X.mean() if beta_prior_scalar is None else beta_prior_scalar  # over N so that the product of A and B will be X.mean()?
+        beta_prior_scalar = 1 / n_sqrt if beta_prior_scalar is None else beta_prior_scalar  # over N so that the product of A and B will be X.mean()?
         # In Schmidt et al., they use the rate param lambda. Then the mean of the exponential is 1 / its param
         # However, np.random.exponential and scipy.stats.expon use the alternative parameterization
         # with scale parameter beta = 1 / lambda
 
         # alpha_prior_scalar, beta_prior_scalar = 0, 0 # flat prior used in other part of Schmidt et al.
         k = 0  # uninformative prior used in Schmidt et al.
+        ijd2k1 = (I * J / 2) + k + 1
         theta = 0  # uninformative prior used in Schmidt et al.
         self.variance_prior_shape_ = k
         self.variance_prior_scale_ = theta
@@ -205,53 +206,15 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         Bs = []
         mu2s = []
         chi = 0.5 * np.square(X).sum()
-        mu2 = np.var(X - np.dot(A, B)) if variance_init is None else variance_init
+        mu2 = np.var(X_orig - np.dot(A, B)) if variance_init is None else variance_init
         m = 0
         diff = self.tol + 1
         obj = mean_squared_error(X, np.dot(A, B))
-        t = time.time()
         while m < M and diff > self.tol:
-            if print_every is not None:
-                if (m + 1) % print_every == 0:
-                    new_t = time.time()
-                    elapsed = new_t - t
-                    t = new_t
-                    if m > 0:
-                        timestring = ": last {} iters in {:.3} seconds".format(print_every, elapsed)
-                    else:
-                        timestring = ""
-                    print("iter {}{}".format(m + 1, timestring))
-            C = np.dot(B, B.T)
-            D = np.dot(X, B.T)
-            for n in range(N):
-                if bases_cols_to_sample[n]:
-                    notn = list(range(n)) + list(range(n + 1, N))
-                    an = (D[:, n] - np.dot(A[:, notn], C[notn, n]) - alpha[:, n] * mu2) / (C[n, n] + MACHINE_PREC)
-                    if self.mode == 'gibbs':
-                        rnorm_variance = mu2 / (C[n, n] + MACHINE_PREC)
-                        A[:, n] = truncated_normal_sample(an, rnorm_variance, alpha[:, n],
-                                                          random_state=self.random_state)
-                    else:
-                        A[:, n] = an.clip(min=0)
-            ac_2d_diff = np.dot(A, C) - (2 * D)
-            xi = 0.5 * np.multiply(A, ac_2d_diff).sum()
+            A, C, D = self._sample_factors(X, A, B, lmda, bases_cols_to_sample, alpha, mu2)
             if sample_sigma:
-                if self.mode == 'gibbs':
-                    mu2 = scipy.stats.invgamma.rvs(a=(I * J / 2) + k + 1, scale=chi + theta + xi,
-                                                   random_state=self.random_state)
-                else:
-                    mu2 = (theta + chi + xi) / ((I * J / 2) + k + 1)
-            E = np.dot(A.T, A)
-            F = np.dot(A.T, X)
-            for n in range(N):
-                if components_rows_to_sample[n]:
-                    notn = list(range(n)) + list(range(n + 1, N))
-                    bn = (F[n] - np.dot(E[n, notn], B[notn]) - beta[n] * mu2) / (E[n, n] + MACHINE_PREC)
-                    if self.mode == 'gibbs':
-                        rnorm_variance = mu2 / (E[n, n] + MACHINE_PREC)
-                        B[n] = truncated_normal_sample(bn, rnorm_variance, beta[n], random_state=self.random_state)
-                    else:
-                        B[n] = bn.clip(min=0)
+                mu2 = self._sample_variance(A, C, D, theta, chi, ijd2k1)
+            B, E, F = self._sample_factors(X.T, B.T, A.T, lmda, components_rows_to_sample, beta.T, mu2, transpose=True)
             if self.mode == 'gibbs':
                 if self.mean_only:
                     if m >= burnin_index:
@@ -266,8 +229,6 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
                 new_obj = mean_squared_error(X, np.dot(A, B))
                 diff = (obj - new_obj) / obj
                 obj = new_obj
-                if self.verbose:
-                    print("MSE: ", obj)
             m += 1
         if self.mode == 'gibbs':
             As, Bs, mu2s = [np.array(arr) for arr in [As, Bs, mu2s]]
@@ -298,6 +259,36 @@ class BayesianNMF(NMF):  # BaseEstimator, TransformerMixin
         self.reconstruction_err_ = obj
         self.n_free_params_ = np.count_nonzero(self.bases_) + np.count_nonzero(self.components_) + 1
         return self
+
+    def _sample_factors(self, X, A, B, lmda, bases_cols_to_sample, alpha, mu2, transpose=False):
+        N = self.n_components
+        C = np.dot(B, B.T)
+        D = np.dot(X, B.T)
+        denom = np.diag(C) + lmda
+        denom[denom == 0] = MACHINE_PREC
+        for n in range(N):
+            if bases_cols_to_sample[n]:
+                notn = list(range(n)) + list(range(n + 1, N))
+                an = (D[:, n] - np.dot(A[:, notn], C[notn, n]) - alpha[:, n] * mu2) / denom[n]
+                if self.mode == 'gibbs':
+                    rnorm_variance = mu2 / denom[n]
+                    A[:, n] = truncated_normal_sample(an, rnorm_variance, alpha[:, n],
+                                                      random_state=self.random_state)
+                else:
+                    A[:, n] = an.clip(min=0)
+        if transpose:
+            return A.T, C.T, D.T
+        return A, C, D
+
+    def _sample_variance(self, A, C, D, theta, chi, ijd2k1):
+        ac_2d_diff = np.dot(A, C) - (2 * D)
+        xi = 0.5 * np.multiply(A, ac_2d_diff).sum()
+        if self.mode == 'gibbs':
+            mu2 = scipy.stats.invgamma.rvs(a=ijd2k1, scale=chi + theta + xi,
+                                           random_state=self.random_state)
+        else:
+            mu2 = (theta + chi + xi) / ijd2k1
+        return mu2
 
     def fit_transform(self, X, y=None, **fit_params):
         """Learn a NMF model for the data X and returns the transformed data.
@@ -464,10 +455,7 @@ def truncated_normal_sample(m, s, l, random_state=None):
     Adapted from randr function at http://mikkelschmidt.dk/code/gibbsnmf.html
     which is Copyright 2007 Mikkel N. Schmidt, ms@it.dk, www.mikkelschmidt.dk
     """
-    if isinstance(random_state, np.random.RandomState):
-        rs = random_state
-    else:
-        rs = np.random.RandomState(seed=random_state)
+    rs = check_random_state(random_state)
     sqrt_2s = np.sqrt(2 * s)
     ls = l * s
     lsm = ls - m
